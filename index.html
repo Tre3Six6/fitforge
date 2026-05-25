@@ -12,6 +12,9 @@
 <meta name="theme-color" content="#0a0a0f">
 <!-- manifest injected dynamically below -->
 <link rel="dns-prefetch" href="//fonts.gstatic.com">
+<link rel="dns-prefetch" href="//supabase.co">
+<!-- Supabase for cross-device real-time sync -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='40' fill='%230a0a0f'/><text x='96' y='138' font-family='serif' font-size='110' font-weight='bold' text-anchor='middle' fill='%23e8ff47'>F</text></svg>">
 <title>FitForge — Rob & Tre</title>
@@ -296,7 +299,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 <div id="app">
   <div class="app-header">
     <div class="header-left">
+      <div style="display:flex;align-items:center;gap:8px">
       <div class="header-brand">FITFORGE</div>
+      <div id="syncDot" style="width:7px;height:7px;border-radius:50%;background:var(--text3);transition:background .3s" title="Sync status"></div>
+    </div>
       <div class="together-badge">Together</div>
     </div>
     <div class="user-switcher">
@@ -776,6 +782,7 @@ function loadState() {
       completedSets: todayData.completedSets || {},
       loggedExercises: todayData.loggedExercises || {},
       loggedFoods: todayData.loggedFoods || {rob:[], tre:[]},
+      setLog: todayData.setLog || {},
       weekStreaks: saved.weekStreaks || {rob:[false,false,false,false,false,false,false],tre:[false,false,false,false,false,false,false]},
       aiHistory: saved.aiHistory || [],
       history: history,
@@ -790,14 +797,18 @@ function saveState() {
   try {
     const todayKey = new Date().toDateString().replace(/ /g,'_');
     const fullHistory = (typeof history !== 'undefined' && history && typeof history === 'object' && !Array.isArray(history)) ? history : {};
-    fullHistory[todayKey] = { waterCups, completedSets, loggedExercises, loggedFoods };
-    // Keep only last 30 days of history to avoid localStorage overflow
+    fullHistory[todayKey] = { waterCups, completedSets, loggedExercises, loggedFoods, setLog };
     const keys = Object.keys(fullHistory);
     if(keys.length > 30) { delete fullHistory[keys[0]]; }
-    localStorage.setItem('fitforge_state', JSON.stringify({
+    const stateData = {
       weekStreaks, aiHistory, history: fullHistory,
-      date: new Date().toDateString()
-    }));
+      date: new Date().toDateString(),
+      lastSaved: new Date().toISOString(),
+      _lastEditedBy: currentView==='both'?'Both':currentView==='rob'?'Rob':'Tre'
+    };
+    localStorage.setItem('fitforge_state', JSON.stringify(stateData));
+    // Push to cloud for cross-device sync
+    if(_syncEnabled) pushToCloud(stateData);
   } catch(e) {}
 }
 const _s = loadState();
@@ -805,6 +816,7 @@ let waterCups = _s.waterCups;
 let completedSets = _s.completedSets;
 let loggedExercises = _s.loggedExercises;
 let loggedFoods = _s.loggedFoods;
+let setLog = _s.setLog || {};
 let aiHistory = _s.aiHistory;
 let weekStreaks = _s.weekStreaks;
 
@@ -821,6 +833,8 @@ window.addEventListener('DOMContentLoaded',()=>{
     document.getElementById('loading').style.display='none';
     document.getElementById('app').classList.add('visible');
     renderAll();
+    // Init cloud sync after UI loads
+    setTimeout(initSupabase, 500);
   },1000);
 });
 
@@ -957,6 +971,8 @@ function renderWorkoutPage(){
   }
   renderFullSchedule();
   renderExerciseLibrary();
+  // Restore saved weights and reps into inputs
+  setTimeout(restoreSetInputs, 50);
 }
 
 function renderFullWorkout(key,plan){
@@ -975,7 +991,17 @@ function renderFullWorkout(key,plan){
     const numSets=typeof ex.sets==='number'?ex.sets:3;
 
     // Build the set logging rows
-    let setsHtml=`<div class="ex-sets-log" id="sets-${idx}">`;
+    // Show last session reference above inputs
+    const lastData=getLastSessionData(ex.name);
+    let lastRef='';
+    if(lastData.rob||lastData.tre){
+      lastRef=`<div style="background:var(--surface3);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:11px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+        <span style="color:var(--text2);font-size:10px;text-transform:uppercase;letter-spacing:.8px;font-weight:700">Last session:</span>
+        ${lastData.rob?`<span style="color:var(--rob);font-weight:700">Rob ${lastData.rob.kg}kg × ${lastData.rob.reps} reps</span>`:''}
+        ${lastData.tre?`<span style="color:var(--tre);font-weight:700">Tre ${lastData.tre.kg}kg × ${lastData.tre.reps} reps</span>`:''}
+      </div>`;
+    }
+    let setsHtml=`<div class="ex-sets-log" id="sets-${idx}">${lastRef}`;
     if(isBoth){
       setsHtml+=`<div class="dual-set-header">
         <div></div>
@@ -1047,7 +1073,6 @@ function toggleSets(idx){
 }
 
 function logSet(exIdx,setIdx,btn){
-  // btn is the clicked element; exName derived from the exercise item's data
   const plan=SHARED_PROGRAM[getTodayPlan().key];
   if(!plan)return;
   const ex=plan.exercises[exIdx];
@@ -1055,22 +1080,121 @@ function logSet(exIdx,setIdx,btn){
   const exName=ex.name;
   const numSets=typeof ex.sets==='number'?ex.sets:3;
   const k=exName+'-'+setIdx;
+
+  // TOGGLE — tap again to undo
+  if(completedSets[k]){
+    completedSets[k]=false;
+    if(btn){btn.classList.remove('logged');btn.textContent='○';}
+    loggedExercises[exName]=false;
+    const item=document.getElementById('exitem-'+exIdx);
+    if(item) item.classList.remove('done');
+    saveState();
+    showToast('↩ '+exName+' set '+( setIdx+1)+' undone');
+    return;
+  }
+
+  // Read weight + reps from inputs and SAVE them
+  const isBoth=(currentView==='both');
+  const robW=document.getElementById('rw-'+exIdx+'-'+setIdx);
+  const robR=document.getElementById('rr-'+exIdx+'-'+setIdx);
+  const treW=document.getElementById('tw-'+exIdx+'-'+setIdx);
+  const treR=document.getElementById('tr-'+exIdx+'-'+setIdx);
+  const sW=document.getElementById(currentView[0]+'w-'+exIdx+'-'+setIdx);
+  const sR=document.getElementById(currentView[0]+'r-'+exIdx+'-'+setIdx);
+
+  // Build set entry
+  const entry={};
+  if(isBoth){
+    entry.rob={kg:parseFloat(robW&&robW.value)||0, reps:parseInt(robR&&robR.value)||0};
+    entry.tre={kg:parseFloat(treW&&treW.value)||0, reps:parseInt(treR&&treR.value)||0};
+  } else if(currentView==='rob'){
+    entry.rob={kg:parseFloat(sW&&sW.value)||0, reps:parseInt(sR&&sR.value)||0};
+  } else {
+    entry.tre={kg:parseFloat(sW&&sW.value)||0, reps:parseInt(sR&&sR.value)||0};
+  }
+
+  // Warn if no weight entered
+  const robKg=entry.rob&&entry.rob.kg;
+  const treKg=entry.tre&&entry.tre.kg;
+  if(!robKg && !treKg){
+    showToast('⚠️ Enter weight first then tap ✓');
+    return;
+  }
+
+  // Save to setLog
+  setLog[k]=entry;
   completedSets[k]=true;
   if(btn){btn.classList.add('logged');btn.textContent='✓';}
+
+  // Update button label to show saved weight
+  if(btn){
+    const label=isBoth
+      ? (robKg?'R:'+robKg+'kg ':'')+( treKg?'T:'+treKg+'kg':'')
+      : (robKg||treKg)+'kg';
+    btn.title=label;
+  }
+
+  // Check all sets done
   let allDone=true;
   for(let i=0;i<numSets;i++){if(!completedSets[exName+'-'+i]){allDone=false;break;}}
   if(allDone){
     loggedExercises[exName]=true;
     const item=document.getElementById('exitem-'+exIdx);
-    if(item)item.classList.add('done');
+    if(item) item.classList.add('done');
     weekStreaks.rob[new Date().getDay()]=true;
     weekStreaks.tre[new Date().getDay()]=true;
     renderStreak();
-    // Save best weight logged for this exercise to history
-    saveExerciseWeight(exIdx, exName, numSets);
-    showToast('✅ '+exName+' complete!');
+    // Check progressive overload vs last session
+    checkProgressiveOverload(exName, exIdx, numSets);
+    showToast('✅ '+exName+' logged!');
+  } else {
+    const setLabel=(robKg||treKg)?(' — '+(robKg||treKg)+'kg'):'';
+    showToast('✓ Set '+(setIdx+1)+setLabel+' saved');
   }
   saveState();
+}
+
+// ── Progressive overload advisor ──────────────────────────────────────────────
+function checkProgressiveOverload(exName, exIdx, numSets){
+  try{
+    const saved=JSON.parse(localStorage.getItem('fitforge_state')||'{}');
+    const hist=saved.history||{};
+    const dates=Object.keys(hist).sort((a,b)=>new Date(a.replace(/_/g,' '))-new Date(b.replace(/_/g,' ')));
+    const todayKey=new Date().toDateString().replace(/ /g,'_');
+    // Find last session that had this exercise (not today)
+    const prevDates=dates.filter(d=>d!==todayKey);
+    let lastKg={rob:0,tre:0};
+    for(let i=prevDates.length-1;i>=0;i--){
+      const wl=(hist[prevDates[i]]||{}).weightLog||{};
+      if(wl[exName]){
+        lastKg.rob=wl[exName].rob||0;
+        lastKg.tre=wl[exName].tre||0;
+        break;
+      }
+    }
+    // Get today's best for this exercise
+    let todayBestRob=0, todayBestTre=0;
+    for(let si=0;si<numSets;si++){
+      const entry=setLog[exName+'-'+si]||{};
+      if(entry.rob&&entry.rob.kg>todayBestRob) todayBestRob=entry.rob.kg;
+      if(entry.tre&&entry.tre.kg>todayBestTre) todayBestTre=entry.tre.kg;
+    }
+    // Save to weightLog
+    const todayHist=hist[todayKey]=hist[todayKey]||{};
+    todayHist.weightLog=todayHist.weightLog||{};
+    todayHist.weightLog[exName]={rob:todayBestRob,tre:todayBestTre};
+    saved.history=hist;
+    localStorage.setItem('fitforge_state',JSON.stringify(saved));
+
+    // Progressive overload advice
+    if(lastKg.rob>0 && todayBestRob>0){
+      if(todayBestRob>lastKg.rob) showToast('🔥 Rob PR on '+exName+'! +'+( todayBestRob-lastKg.rob)+'kg');
+      else if(todayBestRob===lastKg.rob) setTimeout(()=>showToast('💪 Rob: Consider +2.5kg next session'),2000);
+    }
+    if(lastKg.tre>0 && todayBestTre>0){
+      if(todayBestTre>lastKg.tre) showToast('🔥 Tre PR on '+exName+'! +'+(todayBestTre-lastKg.tre)+'kg');
+    }
+  }catch(e){}
 }
 
 function saveExerciseWeight(exIdx, exName, numSets){
@@ -1103,6 +1227,40 @@ function saveExerciseWeight(exIdx, exName, numSets){
 function startWorkout(){
   showPage('workout',document.querySelectorAll('.nav-btn')[1]);
   showToast('💪 Let\'s get it! Same exercises, own weights!');
+}
+
+// Restore saved set values into inputs after render
+function restoreSetInputs(){
+  const plan=SHARED_PROGRAM[getTodayPlan().key];
+  if(!plan)return;
+  plan.exercises.forEach((ex,idx)=>{
+    const numSets=typeof ex.sets==='number'?ex.sets:3;
+    for(let si=0;si<numSets;si++){
+      const k=ex.name+'-'+si;
+      const entry=setLog[k];
+      if(!entry)continue;
+      // Restore values into inputs
+      if(entry.rob){
+        const rw=document.getElementById('rw-'+idx+'-'+si);
+        const rr=document.getElementById('rr-'+idx+'-'+si);
+        if(rw&&entry.rob.kg) rw.value=entry.rob.kg;
+        if(rr&&entry.rob.reps) rr.value=entry.rob.reps;
+      }
+      if(entry.tre){
+        const tw=document.getElementById('tw-'+idx+'-'+si);
+        const tr=document.getElementById('tr-'+idx+'-'+si);
+        if(tw&&entry.tre.kg) tw.value=entry.tre.kg;
+        if(tr&&entry.tre.reps) tr.value=entry.tre.reps;
+      }
+      // Single view
+      const user=currentView==='rob'?'rob':'tre';
+      const sw=document.getElementById(user[0]+'w-'+idx+'-'+si);
+      const sr=document.getElementById(user[0]+'r-'+idx+'-'+si);
+      const userData=entry[user];
+      if(sw&&userData&&userData.kg) sw.value=userData.kg;
+      if(sr&&userData&&userData.reps) sr.value=userData.reps;
+    }
+  });
 }
 
 // FULL SCHEDULE
@@ -1608,6 +1766,44 @@ function renderBodyProgress(){
   document.getElementById('bodyProgress').innerHTML=html;
 }
 
+function getLastSessionData(exName){
+  // Returns {rob:{kg,reps}, tre:{kg,reps}} from the most recent previous session
+  try{
+    const saved=JSON.parse(localStorage.getItem('fitforge_state')||'{}');
+    const hist=saved.history||{};
+    const todayKey=new Date().toDateString().replace(/ /g,'_');
+    const dates=Object.keys(hist).filter(d=>d!==todayKey)
+      .sort((a,b)=>new Date(a.replace(/_/g,' '))-new Date(b.replace(/_/g,' ')));
+    for(let i=dates.length-1;i>=0;i--){
+      const sl=(hist[dates[i]]||{}).setLog||{};
+      const wl=(hist[dates[i]]||{}).weightLog||{};
+      // Try to find any set entry for this exercise
+      const keys=Object.keys(sl).filter(k=>k.startsWith(exName+'-'));
+      if(keys.length>0){
+        let robBest={kg:0,reps:0},treBest={kg:0,reps:0};
+        keys.forEach(k=>{
+          const e=sl[k]||{};
+          if(e.rob&&e.rob.kg>=robBest.kg){robBest=e.rob;}
+          if(e.tre&&e.tre.kg>=treBest.kg){treBest=e.tre;}
+        });
+        return {
+          rob:robBest.kg>0?robBest:null,
+          tre:treBest.kg>0?treBest:null
+        };
+      }
+      // Fallback to weightLog
+      if(wl[exName]){
+        const w=wl[exName];
+        return {
+          rob:w.rob>0?{kg:w.rob,reps:'?'}:null,
+          tre:w.tre>0?{kg:w.tre,reps:'?'}:null
+        };
+      }
+    }
+  }catch(e){}
+  return {rob:null,tre:null};
+}
+
 function getStrengthHistory(){
   // Extract best weights logged per exercise per day from localStorage
   try{
@@ -1976,6 +2172,134 @@ function closeDayModal(){
 document.getElementById('exModal').addEventListener('click',function(e){if(e.target===this)closeExModal();});
 
 
+// ===================================================
+// SUPABASE CROSS-DEVICE SYNC
+// ===================================================
+// CONFIG — replace with your Supabase project values
+// Get these from: supabase.com → your project → Settings → API
+const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9kdmxreG9tenBkbWZ3dGltd29rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MTAwOTMsImV4cCI6MjA5NTI4NjA5M30.ZCdNuFOHqWJVjJ-fnqno9l9jo9jI8-bjo2XGaT7egqA';
+
+let _supabase = null;
+let _syncChannel = null;
+let _syncEnabled = false;
+
+function initSupabase(){
+  if(SUPABASE_URL === 'https://odvlkxomzpdmfwtimwok.supabase.co') return; // not configured yet
+  try{
+    _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    _syncEnabled = true;
+    console.log('[FitForge] Supabase sync enabled');
+    // Subscribe to real-time changes
+    _syncChannel = _supabase
+      .channel('fitforge-sync')
+      .on('postgres_changes', {event:'*', schema:'public', table:'fitforge_state'},
+        (payload) => {
+          console.log('[FitForge] Remote change received');
+          handleRemoteSync(payload.new);
+        }
+      )
+      .subscribe();
+    // Load latest data from cloud on startup
+    loadFromCloud();
+  }catch(e){
+    console.warn('[FitForge] Supabase init failed:', e);
+    _syncEnabled = false;
+  }
+}
+
+async function pushToCloud(stateData){
+  if(!_syncEnabled || !_supabase) return;
+  try{
+    const todayKey = new Date().toDateString().replace(/ /g,'_');
+    await _supabase.from('fitforge_state').upsert({
+      id: 'shared',
+      updated_at: new Date().toISOString(),
+      state_json: JSON.stringify(stateData)
+    });
+    showSyncDot('synced');
+  }catch(e){
+    showSyncDot('offline');
+    console.warn('[FitForge] Cloud push failed:', e);
+  }
+}
+
+async function loadFromCloud(){
+  if(!_syncEnabled || !_supabase) return;
+  try{
+    const {data, error} = await _supabase
+      .from('fitforge_state')
+      .select('state_json, updated_at')
+      .eq('id','shared')
+      .single();
+    if(error || !data) return;
+    // Compare timestamps — use whichever is newer
+    const cloudData = JSON.parse(data.state_json);
+    const localData = JSON.parse(localStorage.getItem('fitforge_state')||'{}');
+    const cloudTime = new Date(data.updated_at).getTime();
+    const localTime = new Date(localData.lastSaved||0).getTime();
+    if(cloudTime > localTime){
+      // Cloud is newer — merge and update
+      mergeAndApplyState(cloudData);
+      showToast('☁️ Synced from cloud');
+    }
+    showSyncDot('synced');
+  }catch(e){
+    showSyncDot('offline');
+  }
+}
+
+function handleRemoteSync(newRow){
+  if(!newRow || !newRow.state_json) return;
+  try{
+    const remoteState = JSON.parse(newRow.state_json);
+    mergeAndApplyState(remoteState);
+    showToast('🔄 '+( remoteState._lastEditedBy||'Other device')+' updated — synced!');
+  }catch(e){}
+}
+
+function mergeAndApplyState(remoteState){
+  // Merge remote state — remote wins on conflicts (last write wins)
+  try{
+    if(remoteState.history){
+      const localRaw = JSON.parse(localStorage.getItem('fitforge_state')||'{}');
+      const localHist = localRaw.history || {};
+      // Merge histories — keep all dates from both
+      const merged = Object.assign({}, localHist, remoteState.history);
+      remoteState.history = merged;
+    }
+    // Update localStorage with merged state
+    remoteState.lastSaved = new Date().toISOString();
+    localStorage.setItem('fitforge_state', JSON.stringify(remoteState));
+    // Reload state variables
+    const s = loadState();
+    waterCups = s.waterCups;
+    completedSets = s.completedSets;
+    loggedExercises = s.loggedExercises;
+    loggedFoods = s.loggedFoods;
+    setLog = s.setLog || {};
+    weekStreaks = s.weekStreaks;
+    // Re-render current page
+    renderAll();
+    if(currentPage==='workout') renderWorkoutPage();
+    if(currentPage==='nutrition') renderNutritionPage();
+    if(currentPage==='progress') renderProgress();
+  }catch(e){console.warn('[FitForge] Merge failed:',e);}
+}
+
+function showSyncDot(status){
+  let dot = document.getElementById('syncDot');
+  if(!dot) return;
+  dot.style.background = status==='synced' ? 'var(--success)' :
+                          status==='syncing' ? 'var(--warning)' : 'var(--text3)';
+  dot.title = status==='synced' ? 'Synced ✅' :
+               status==='syncing' ? 'Syncing...' : 'Offline';
+}
+
+// Override saveState to also push to cloud
+const _localSaveState = saveState;
+
+// ===================================================
 // ===== SINGLE-FILE PWA BOOTSTRAP =====
 (function(){
   // Build manifest as a JS object — no string escaping issues
