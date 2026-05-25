@@ -1273,7 +1273,27 @@ function renderMealLog(){
   const meals=['Breakfast','Lunch','Dinner','Snacks'];
   const who=getActiveUser();
   const foods=loggedFoods[who];
-  const bothNote = currentView==='both' ? `<div style="background:#e8ff4715;border:1px solid #e8ff4730;border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text2);margin-bottom:12px">📋 Logging for <strong style="color:var(--accent)">ROB</strong> in Both view. Switch to Tre view to log Tre's food.</div>` : '';
+  let bothNote='';
+  if(currentView==='both'){
+    const robTotal=loggedFoods.rob.reduce((s,f)=>s+f.cals,0);
+    const treTotal=loggedFoods.tre.reduce((s,f)=>s+f.cals,0);
+    bothNote=`<div style="background:#e8ff4715;border:1px solid #e8ff4730;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">🔄 Both View — Auto-Synced</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="text-align:center">
+          <div style="font-size:10px;color:var(--rob);font-weight:700;text-transform:uppercase">Rob</div>
+          <div style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--accent)">${robTotal}</div>
+          <div style="font-size:10px;color:var(--text3)">/ ${USERS.rob.calories} kcal</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:var(--tre);font-weight:700;text-transform:uppercase">Tre</div>
+          <div style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--accent)">${treTotal}</div>
+          <div style="font-size:10px;color:var(--text3)">/ ${USERS.tre.calories} kcal</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text2);margin-top:8px;text-align:center">Food logged here goes to both. Switch to Rob or Tre view for individual logs.</div>
+    </div>`;
+  }
   let html=bothNote;
   meals.forEach(meal=>{
     const mf=foods.filter(f=>f.meal===meal);
@@ -1290,7 +1310,7 @@ function renderMealLog(){
 function renderNutritionTip(){
   const isBoth=currentView==='both';
   const tip=isBoth
-    ? `Both Rob and Tre follow the SAME meal template — same foods, adjusted portions. Rob targets 2,400 cal / 180g protein. Tre targets 2,800 cal / 210g protein. Training together means you can meal prep together too. Prioritize protein at every meal. Eat the same meals, just adjust quantities based on your calorie target.`
+    ? `In Both view, food and water you log syncs to Rob AND Tre at the same time. Switch to Rob or Tre view to log separately or see individual totals. Rob: 2,400 cal / 180g protein target. Tre: 2,800 cal / 210g protein target.`
     : currentView==='rob'
       ? `At 53 with existing training, your 2,400 cal / 180g protein target maintains muscle in a small deficit. Leucine-rich foods (chicken, Greek yogurt, eggs) are priority. Front-load carbs on training days. Protein timing matters more at your age — aim for 40g+ within 90 min post-workout.`
       : `At 22 and already training, your 2,800 cal / 210g protein target supports muscle growth while staying lean. Carb cycling works well: more carbs on training days (Mon/Tue/Thu/Fri), fewer on cardio/rest days. Post-workout meal is the most important of your day.`;
@@ -1429,13 +1449,24 @@ function pickFood(el,src){
   if(f) addFood(f.name,f.cals,f.p,f.c,f.f);
 }
 function addFood(name,cals,p,c,f){
-  const who=getActiveUser();
-  loggedFoods[who].push({name,cals,p,c,f,meal:currentMeal});
-  closeFoodModal();
-  renderNutritionPage();
-  renderMacroRings('macroRings',true);
-  saveState();
-  showToast('✅ '+name+' logged to '+(who==='rob'?'Rob':'Tre'));
+  if(currentView==='both'){
+    // Both view — log to Rob AND Tre simultaneously
+    loggedFoods.rob.push({name,cals,p,c,f,meal:currentMeal});
+    loggedFoods.tre.push({name,cals,p,c,f,meal:currentMeal});
+    closeFoodModal();
+    renderNutritionPage();
+    renderMacroRings('macroRings',true);
+    saveState();
+    showToast('✅ '+name+' logged for both Rob & Tre');
+  } else {
+    const who=currentView;
+    loggedFoods[who].push({name,cals,p,c,f,meal:currentMeal});
+    closeFoodModal();
+    renderNutritionPage();
+    renderMacroRings('macroRings',true);
+    saveState();
+    showToast('✅ '+name+' logged for '+(who==='rob'?'Rob':'Tre'));
+  }
 }
 
 // ===================================================
@@ -1731,11 +1762,22 @@ function renderWater(){
 }
 
 function toggleWater(idx){
-  const who=getActiveUser();
-  waterCups[who]=idx<waterCups[who]?idx:idx+1;
-  renderWater();
-  saveState();
-  if(waterCups[who]>=8) showToast('💧 Hydration goal hit!');
+  if(currentView==='both'){
+    // Sync water to both
+    const newVal=idx<waterCups.rob?idx:idx+1;
+    waterCups.rob=newVal;
+    waterCups.tre=newVal;
+    renderWater();
+    saveState();
+    if(newVal>=8) showToast('💧 Both hit hydration goal!');
+    else showToast('💧 '+newVal+'/8 cups — both synced');
+  } else {
+    const who=currentView;
+    waterCups[who]=idx<waterCups[who]?idx:idx+1;
+    renderWater();
+    saveState();
+    if(waterCups[who]>=8) showToast('💧 '+(who==='rob'?'Rob':'Tre')+' hit hydration goal!');
+  }
 }
 
 // ===================================================
