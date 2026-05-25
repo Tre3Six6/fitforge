@@ -1548,10 +1548,10 @@ function renderBodyProgress(){
       </div>
       <div class="divider"></div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-        <div class="stat-box"><div class="stat-val" style="color:var(--rob)">195</div><div class="stat-lbl">Rob Now</div></div>
-        <div class="stat-box"><div class="stat-val" style="color:var(--success)">180</div><div class="stat-lbl">Rob Goal</div></div>
-        <div class="stat-box"><div class="stat-val" style="color:var(--tre)">170</div><div class="stat-lbl">Tre Now</div></div>
-        <div class="stat-box"><div class="stat-val" style="color:var(--success)">185</div><div class="stat-lbl">Tre Goal</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--rob)">${USERS.rob.weight}kg</div><div class="stat-lbl">Rob Now</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--success)">${USERS.rob.targetWeight}kg</div><div class="stat-lbl">Rob Goal</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--tre)">${USERS.tre.weight}kg</div><div class="stat-lbl">Tre Now</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--success)">${USERS.tre.targetWeight}kg</div><div class="stat-lbl">Tre Goal</div></div>
       </div>
     </div>`;
   } else {
@@ -1564,9 +1564,9 @@ function renderBodyProgress(){
       <div class="chart-labels">${labels.map(l=>`<span>${l}</span>`).join('')}</div>
       <div class="divider"></div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
-        <div class="stat-box"><div class="stat-val" style="color:var(--accent)">${u.weight}</div><div class="stat-lbl">Current</div></div>
-        <div class="stat-box"><div class="stat-val" style="color:var(--success)">${u.targetWeight}</div><div class="stat-lbl">Target</div></div>
-        <div class="stat-box"><div class="stat-val" style="color:var(--accent2)">${u.weight-u.targetWeight}</div><div class="stat-lbl">To Go</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--accent)">${u.weight}kg</div><div class="stat-lbl">Current</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--success)">${u.targetWeight}kg</div><div class="stat-lbl">Target</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--accent2)">${Math.abs(u.weight-u.targetWeight)}kg</div><div class="stat-lbl">To Go</div></div>
       </div>
     </div>`;
   }
@@ -1639,10 +1639,10 @@ function renderStrengthProgress(){
 
   // Show real data if exists, else show starter chart with instructions
   const lifts=[
-    {name:'Bench Press',rob:[66,68,70,70,72,74,74],tre:[79,82,84,86,88,91,91]},
-    {name:'Barbell Row',rob:[61,63,63,66,68,70,70],tre:[84,86,88,91,93,95,97]},
-    {name:'Squat',rob:[84,86,88,91,93,95,95],tre:[102,106,111,115,120,124,124]},
-    {name:'Deadlift',rob:[102,106,111,113,115,120,122],tre:[124,129,133,138,143,147,149]},
+    {name:'Bench Press',rob:[60,60,62,62,64,64,65],tre:[75,75,77,78,80,80,82]},
+    {name:'Barbell Row',rob:[55,55,57,57,59,60,60],tre:[80,80,82,83,85,85,87]},
+    {name:'Squat',rob:[80,80,82,82,84,85,85],tre:[100,100,102,104,106,107,107]},
+    {name:'Deadlift',rob:[100,100,102,103,105,105,107],tre:[120,120,122,124,126,127,127]},
   ];
   // If real data exists, show it instead
   if(hasRealData){
