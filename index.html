@@ -13,8 +13,9 @@
 <!-- manifest injected dynamically below -->
 <link rel="dns-prefetch" href="//fonts.gstatic.com">
 <link rel="dns-prefetch" href="//supabase.co">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
 <!-- Supabase for cross-device real-time sync -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='40' fill='%230a0a0f'/><text x='96' y='138' font-family='serif' font-size='110' font-weight='bold' text-anchor='middle' fill='%23e8ff47'>F</text></svg>">
 <title>FitForge — Rob & Tre</title>
@@ -301,7 +302,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
     <div class="header-left">
       <div style="display:flex;align-items:center;gap:8px">
       <div class="header-brand">FITFORGE</div>
-      <div id="syncDot" style="width:7px;height:7px;border-radius:50%;background:var(--text3);transition:background .3s" title="Sync status"></div>
+      <div id="syncDot" style="width:9px;height:9px;border-radius:50%;background:var(--text3);transition:background .5s;flex-shrink:0" title="Sync status"></div>
     </div>
       <div class="together-badge">Together</div>
     </div>
@@ -833,8 +834,9 @@ window.addEventListener('DOMContentLoaded',()=>{
     document.getElementById('loading').style.display='none';
     document.getElementById('app').classList.add('visible');
     renderAll();
-    // Init cloud sync after UI loads
-    setTimeout(initSupabase, 500);
+    // Init cloud sync — try multiple times to ensure CDN loaded
+    setTimeout(initSupabase, 800);
+    setTimeout(initSupabase, 3000);
   },1000);
 });
 
@@ -2185,25 +2187,46 @@ let _syncChannel = null;
 let _syncEnabled = false;
 
 function initSupabase(){
-  if(SUPABASE_URL === 'YOUR_SUPABASE_URL') return; // not configured yet
+  if(SUPABASE_URL === 'YOUR_SUPABASE_URL') return;
+  // Wait for Supabase library to load
+  if(typeof supabase === 'undefined' || typeof supabase.createClient === 'undefined'){
+    console.warn('[FitForge] Supabase library not loaded yet, retrying...');
+    setTimeout(initSupabase, 1000);
+    return;
+  }
   try{
     _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     _syncEnabled = true;
-    console.log('[FitForge] Supabase sync enabled');
-    // Subscribe to real-time changes
-    _syncChannel = _supabase
-      .channel('fitforge-sync')
-      .on('postgres_changes', {event:'*', schema:'public', table:'fitforge_state'},
-        (payload) => {
-          console.log('[FitForge] Remote change received');
-          handleRemoteSync(payload.new);
-        }
-      )
-      .subscribe();
-    // Load latest data from cloud on startup
-    loadFromCloud();
+    console.log('[FitForge] Supabase connected ✅');
+    showSyncDot('syncing');
+    // Test connection with a simple query
+    _supabase.from('fitforge_state').select('id').limit(1).then(({data,error})=>{
+      if(error){
+        console.warn('[FitForge] DB query failed:', error.message);
+        showSyncDot('offline');
+      } else {
+        console.log('[FitForge] DB connection verified ✅');
+        showSyncDot('synced');
+        // Now subscribe to realtime
+        _syncChannel = _supabase
+          .channel('fitforge-sync')
+          .on('postgres_changes',
+            {event:'*', schema:'public', table:'fitforge_state'},
+            (payload) => {
+              console.log('[FitForge] Remote update received');
+              handleRemoteSync(payload.new);
+            }
+          )
+          .subscribe((status)=>{
+            console.log('[FitForge] Realtime status:', status);
+          });
+        // Load latest from cloud
+        loadFromCloud();
+      }
+    });
   }catch(e){
-    console.warn('[FitForge] Supabase init failed:', e);
+    console.warn('[FitForge] Supabase init error:', e);
+    showSyncDot('offline');
     _syncEnabled = false;
   }
 }
